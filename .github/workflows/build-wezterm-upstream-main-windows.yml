@@ -1,0 +1,169 @@
+# .github/workflows/build-wezterm-upstream-main-windows.yml
+#
+# Manual trigger instructions:
+# 1. Push this file to the default branch of your fork, usually main.
+# 2. Open your fork on GitHub.
+# 3. Go to Actions.
+# 4. Select "Build WezTerm upstream main for Windows".
+# 5. Click "Run workflow".
+# 6. Keep upstream_ref as "main", or enter a specific upstream commit SHA/tag.
+#
+# CLI alternative:
+#   gh workflow run build-wezterm-upstream-main-windows.yml -f upstream_ref=main
+#
+# GitHub only shows the "Run workflow" button for workflows using workflow_dispatch,
+# and the workflow file must be present on the repository's default branch.
+
+name: Build WezTerm upstream main for Windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "Branch, tag, or commit SHA from wezterm/wezterm"
+        required: true
+        default: "main"
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Build upstream WezTerm Windows x64
+    runs-on: windows-2022
+
+    env:
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+      RUSTUP_WINDOWS_PATH_ADD_BIN: "1"
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Checkout upstream WezTerm
+        uses: actions/checkout@v4
+        with:
+          repository: wezterm/wezterm
+          ref: ${{ inputs.upstream_ref }}
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install Rust MSVC toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          target: x86_64-pc-windows-msvc
+
+      - name: Ensure Strawberry Perl is first in PATH
+        shell: pwsh
+        run: |
+          if (!(Test-Path "C:\Strawberry\perl\bin\perl.exe")) {
+            choco install strawberryperl -y --no-progress
+          }
+
+          "C:\Strawberry\perl\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "C:\Strawberry\c\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Enable sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Cache vendored Rust dependencies
+        uses: actions/cache@v4
+        id: cache-cargo-vendor
+        with:
+          path: |
+            vendor
+            .cargo/config
+          key: cargo-deps-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Vendor Rust dependencies
+        if: steps.cache-cargo-vendor.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          cargo vendor --locked --versioned-dirs >> .cargo/config
+
+      - name: Confirm environment
+        shell: pwsh
+        run: |
+          rustc -V
+          cargo -V
+          perl -v
+          git --version
+          git submodule status
+          if (!(Get-Command iscc.exe -ErrorAction SilentlyContinue)) {
+            throw "Inno Setup compiler iscc.exe was not found on PATH"
+          }
+          iscc.exe /? | Select-Object -First 5
+
+      - name: Build wezterm
+        shell: cmd
+        run: |
+          PATH C:\Strawberry\perl\bin;%PATH%
+          cargo build -p wezterm --release
+
+      - name: Build wezterm-gui
+        shell: cmd
+        run: |
+          PATH C:\Strawberry\perl\bin;%PATH%
+          cargo build -p wezterm-gui --release
+
+      - name: Build wezterm-mux-server
+        shell: cmd
+        run: |
+          PATH C:\Strawberry\perl\bin;%PATH%
+          cargo build -p wezterm-mux-server --release
+
+      - name: Build strip-ansi-escapes
+        shell: cmd
+        run: |
+          PATH C:\Strawberry\perl\bin;%PATH%
+          cargo build -p strip-ansi-escapes --release
+
+      - name: Package official Windows zip and installer
+        shell: bash
+        run: |
+          bash ci/deploy.sh
+
+      - name: Stage artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+
+          $commit = git rev-parse HEAD
+          $shortCommit = git rev-parse --short=8 HEAD
+          $date = Get-Date -Format "yyyy-MM-dd HH:mm:ss K"
+
+          @"
+          WezTerm upstream Windows build
+          Repository: wezterm/wezterm
+          Requested ref: ${{ inputs.upstream_ref }}
+          Resolved commit: $commit
+          Built at: $date
+          Runner: windows-2022
+          Unsigned: yes
+          "@ | Out-File -Encoding utf8 dist\build-info.txt
+
+          Get-ChildItem WezTerm-*.zip, WezTerm-*.exe | Copy-Item -Destination dist -Force
+
+          Get-ChildItem dist\WezTerm-*.zip, dist\WezTerm-*.exe | ForEach-Object {
+            $hash = Get-FileHash $_.FullName -Algorithm SHA256
+            "$($hash.Hash.ToLower())  $($_.Name)" | Out-File -Encoding ascii "$($_.FullName).sha256"
+          }
+
+          $zip = Get-ChildItem dist\WezTerm-windows-*.zip | Select-Object -First 1
+          if ($zip) {
+            New-Item -ItemType Directory -Force dist\raw-runtime | Out-Null
+            Expand-Archive -Path $zip.FullName -DestinationPath dist\raw-runtime -Force
+          } else {
+            throw "No WezTerm-windows-*.zip was produced"
+          }
+
+          Get-ChildItem -Recurse dist | Select-Object FullName, Length
+
+      - name: Upload installer, zip, checksums, and extracted runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: wezterm-windows-upstream-main
+          path: |
+            dist/**
+          if-no-files-found: error
+          retention-days: 2
