@@ -123,7 +123,13 @@ jobs:
       - name: Package official Windows zip and installer
         shell: bash
         run: |
+          set -x  # Enable debug output
           bash ci/deploy.sh
+          if [ ! -f WezTerm-windows-*.zip ]; then
+            echo "ERROR: Deploy script did not produce WezTerm-windows-*.zip"
+            ls -la WezTerm-* || echo "No WezTerm files found"
+            exit 1
+          fi
 
       - name: Stage artifacts
         shell: pwsh
