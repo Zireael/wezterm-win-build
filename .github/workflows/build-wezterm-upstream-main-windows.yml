@@ -96,29 +96,11 @@ jobs:
 
           iscc.exe /? | Select-Object -First 5
 
-      - name: Build wezterm
+      - name: Build wezterm and related binaries
         shell: cmd
         run: |
           PATH C:\Strawberry\perl\bin;%PATH%
-          cargo build -p wezterm --release
-
-      - name: Build wezterm-gui
-        shell: cmd
-        run: |
-          PATH C:\Strawberry\perl\bin;%PATH%
-          cargo build -p wezterm-gui --release
-
-      - name: Build wezterm-mux-server
-        shell: cmd
-        run: |
-          PATH C:\Strawberry\perl\bin;%PATH%
-          cargo build -p wezterm-mux-server --release
-
-      - name: Build strip-ansi-escapes
-        shell: cmd
-        run: |
-          PATH C:\Strawberry\perl\bin;%PATH%
-          cargo build -p strip-ansi-escapes --release
+          cargo build --release -p wezterm -p wezterm-gui -p wezterm-mux-server -p strip-ansi-escapes
 
       - name: Package official Windows zip and installer
         shell: bash
